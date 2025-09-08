@@ -27,7 +27,7 @@ from doc_retrieval import (
     enhanced_search
 )
 from dbase_store import DatabaseConfig
-from doc_process import process_document
+from doc_process import process_document, process_document_with_azure
 
 # Configure logging
 logging.basicConfig(
@@ -100,7 +100,6 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000, description="Search query")
     max_results: Optional[int] = Field(10, ge=1, le=100, description="Maximum number of results to return")
     min_similarity_threshold: Optional[float] = Field(0.5, ge=0.0, le=1.0, description="Minimum similarity threshold")
-    source_filter: Optional[str] = Field(None, description="Filter by document source")
     enable_query_enhancement: Optional[bool] = Field(True, description="Enable LLM-based query enhancement")
     enable_context: Optional[bool] = Field(True, description="Include context chunks around matches")
     full_content: Optional[bool] = Field(False, description="Return full content instead of preview")
@@ -231,7 +230,6 @@ async def enhanced_search_endpoint(request: SearchRequest):
         # Perform enhanced search
         results = await enhanced_search(
             query=request.query,
-            source_filter=request.source_filter,
             max_results=request.max_results,
             min_similarity=request.min_similarity_threshold,
             enable_context=request.enable_context,
@@ -259,7 +257,6 @@ async def search_with_params(
     query: str = Query(..., description="Search query"),
     max_results: int = Query(10, ge=1, le=100, description="Maximum number of results"),
     min_similarity: float = Query(0.5, ge=0.0, le=1.0, description="Minimum similarity threshold"),
-    source_filter: Optional[str] = Query(None, description="Filter by document source"),
     enable_enhancement: bool = Query(True, description="Enable query enhancement"),
     enable_context: bool = Query(True, description="Include context chunks"),
     full_content: bool = Query(False, description="Return full content")
@@ -276,7 +273,6 @@ async def search_with_params(
             query=query,
             max_results=max_results,
             min_similarity_threshold=min_similarity,
-            source_filter=source_filter,
             enable_query_enhancement=enable_enhancement,
             enable_context=enable_context,
             full_content=full_content
@@ -289,44 +285,8 @@ async def search_with_params(
         logger.error(f"GET search failed: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid search parameters: {str(e)}")
 
-# Document processing endpoint
-@app.post("/documents/process", response_model=DocumentProcessResponse, tags=["Documents"])
-async def process_document_endpoint(
-    request: DocumentProcessRequest,
-    background_tasks: BackgroundTasks
-):
-    """
-    Process and store a document in the vector database.
-    This runs as a background task for large files.
-    """
-    try:
-        # Validate file path
-        file_path = Path(request.file_path)
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
-        
-        if not file_path.is_file():
-            raise HTTPException(status_code=400, detail=f"Path is not a file: {request.file_path}")
-        
-        logger.info(f"Processing document: {request.file_path}")
-        
-        # Add processing task to background
-        background_tasks.add_task(process_document_async, str(file_path.absolute()))
-        
-        return DocumentProcessResponse(
-            success=True,
-            message=f"Document processing started for: {file_path.name}",
-            details={"file_path": str(file_path.absolute()), "status": "processing"}
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Document processing request failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
-
 # Upload and process document endpoint - Modified to accept binary data
-@app.post("/documents/upload", response_model=DocumentProcessResponse, tags=["Documents"])
+@app.post("/documents/upload", response_model=DocumentProcessResponse, tags=["Documents - Standard Extraction"])
 async def upload_and_process_document(
     request: BinaryFileUploadRequest,
     background_tasks: BackgroundTasks = None
@@ -409,9 +369,10 @@ async def upload_and_process_document(
         logger.error(f"Binary file upload failed: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    
 
 # Legacy multipart file upload endpoint (keeping for backward compatibility)
-@app.post("/documents/upload-multipart", response_model=DocumentProcessResponse, tags=["Documents"])
+@app.post("/documents/upload-multipart", response_model=DocumentProcessResponse, tags=["Documents - Standard Extraction"])
 async def upload_multipart_document(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None
@@ -450,11 +411,143 @@ async def upload_multipart_document(
                 message=f"File uploaded and processed successfully: {file.filename}",
                 details=result
             )
-        
     except Exception as e:
         logger.error(f"File upload failed: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+
+# Upload and process document endpoint - Modified to accept binary data
+@app.post("/documents/upload/azuredocai", response_model=DocumentProcessResponse, tags=["Documents - Azure Doc AI Extraction"])
+async def azure_upload_and_process_document(
+    request: BinaryFileUploadRequest,
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Accept binary file data (base64 encoded), create a file in root directory and process it.
+    """
+    try:
+        # Decode the base64 file data
+        try:
+            file_content = base64.b64decode(request.file_data)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid base64 file data: {str(e)}")
+        
+        # Generate unique filename to avoid conflicts
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        file_extension = Path(request.filename).suffix
+        safe_filename = f"{timestamp}_{unique_id}_{Path(request.filename).stem}{file_extension}"
+        
+        # Create file in root directory (current working directory)
+        file_path = Path.cwd() / safe_filename
+        
+        # Write binary content to file
+        try:
+            with open(file_path, "wb") as f:
+                f.write(file_content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
+        
+        logger.info(f"Binary file created: {file_path} (original: {request.filename})")
+        logger.info(f"File size: {len(file_content)} bytes")
+        
+        # Add processing task to background
+        if background_tasks:
+            background_tasks.add_task(
+                process_document_async, 
+                str(file_path.absolute()),
+                request.filename,  # Pass original filename for reference
+                str(file_path)     # Pass created file path for cleanup
+            )
+            
+            return DocumentProcessResponse(
+                success=True,
+                message=f"File created and processing started: {request.filename}",
+                details={
+                    "original_filename": request.filename,
+                    "created_file_path": str(file_path.absolute()),
+                    "file_size_bytes": len(file_content),
+                    "status": "processing"
+                }
+            )
+        else:
+            # Process immediately (blocking)
+            try:
+                result = await process_document_with_azure(str(file_path.absolute()))
+                
+                return DocumentProcessResponse(
+                    success=True,
+                    message=f"File created and processed successfully: {request.filename}",
+                    details={
+                        "original_filename": request.filename,
+                        "created_file_path": str(file_path.absolute()),
+                        "file_size_bytes": len(file_content),
+                        "processing_result": result,
+                        "status": "completed"
+                    }
+                )
+            except Exception as e:
+                # Clean up file if processing fails
+                try:
+                    file_path.unlink()
+                except:
+                    pass
+                raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Binary file upload failed: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    
+
+# Legacy multipart file upload endpoint (keeping for backward compatibility)
+@app.post("/documents/upload-multipart/azuredocai", response_model=DocumentProcessResponse, tags=["Documents - Azure Doc AI Extraction"])
+async def azure_upload_multipart_document(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Legacy multipart file upload endpoint for backward compatibility.
+    """
+    try:
+        # Create uploads directory if it doesn't exist
+        upload_dir = Path("uploads")
+        upload_dir.mkdir(exist_ok=True)
+        
+        # Save uploaded file
+        file_path = upload_dir / file.filename
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        logger.info(f"Uploaded file saved: {file_path}")
+        
+        # Add processing task to background
+        if background_tasks:
+            background_tasks.add_task(process_document_async, str(file_path.absolute()))
+            
+            return DocumentProcessResponse(
+                success=True,
+                message=f"File uploaded and processing started: {file.filename}",
+                details={"file_path": str(file_path.absolute()), "status": "processing"}
+            )
+        else:
+            # Process immediately (blocking)
+            result = await process_document_with_azure(str(file_path.absolute()))
+            
+            return DocumentProcessResponse(
+                success=True,
+                message=f"File uploaded and processed successfully: {file.filename}",
+                details=result
+            )
+    except Exception as e:
+        logger.error(f"File upload failed: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
 
 # Database statistics endpoint
 @app.get("/database/stats", tags=["Database"])
@@ -475,42 +568,6 @@ async def get_database_stats():
         logger.error(f"Failed to get database stats: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 
-# Similar documents endpoint
-@app.get("/documents/{document_id}/similar", tags=["Documents"])
-async def get_similar_documents(
-    document_id: str,
-    limit: int = Query(5, ge=1, le=20, description="Number of similar documents to return")
-):
-    """Find documents similar to a given document."""
-    try:
-        if not retriever:
-            raise HTTPException(status_code=503, detail="Retriever not available")
-        
-        similar_docs = await retriever.get_similar_documents(document_id, limit)
-        
-        return {
-            "success": True,
-            "document_id": document_id,
-            "total_results": len(similar_docs),
-            "results": [
-                {
-                    "document_id": doc.document_id,
-                    "content": doc.content[:300] + "..." if len(doc.content) > 300 else doc.content,
-                    "similarity_score": round(doc.similarity_score, 4),
-                    "source": doc.source,
-                    "chunk_index": doc.chunk_index,
-                    "metadata": doc.metadata
-                }
-                for doc in similar_docs
-            ]
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to find similar documents: {e}")
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-
 # Background task for document processing - Modified to handle cleanup
 async def process_document_async(file_path: str, original_filename: str = None, cleanup_path: str = None):
     """Process document in background with optional cleanup."""
@@ -524,14 +581,13 @@ async def process_document_async(file_path: str, original_filename: str = None, 
         logger.info(f"Background processing completed for: {file_path}")
         logger.info(f"Processing result: {result}")
         
-        # Optional: Clean up the created file after processing
-        # Uncomment the lines below if you want to delete the file after processing
-        # if cleanup_path and Path(cleanup_path).exists():
-        #     try:
-        #         Path(cleanup_path).unlink()
-        #         logger.info(f"Cleaned up temporary file: {cleanup_path}")
-        #     except Exception as cleanup_error:
-        #         logger.warning(f"Failed to cleanup file {cleanup_path}: {cleanup_error}")
+        #Clean up the created file after processing
+        if cleanup_path and Path(cleanup_path).exists():
+            try:
+                Path(cleanup_path).unlink()
+                logger.info(f"Cleaned up temporary file: {cleanup_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup file {cleanup_path}: {cleanup_error}")
         
     except Exception as e:
         logger.error(f"Background processing failed for {file_path}: {e}")
@@ -585,7 +641,7 @@ async def root(
     """API root endpoint with configurable response details."""
     
     base_response = {
-        "message": "Document Retrieval API",
+        "message": "Document Extractor & Retrieval API",
         "version": "1.0.0",
         "status": "running",
         "timestamp": datetime.now().isoformat()
@@ -599,14 +655,13 @@ async def root(
     if show_endpoints:
         base_response["endpoints"] = {
             "health": "/health",
-            "document_simple_search": "/search/simple",
             "document_enhanced_search": "/search/enhanced", 
             "document_search_parameterized": "/search",
-            "process_localdocument": "/documents/process",
             "upload_binary_document": "/documents/upload",
             "upload_multipart_document": "/documents/upload-multipart",
+            "upload_binary_document_using_azure": "/documents/upload/azuredocai",
+            "upload_multipart_document_using_azure": "/documents/upload-multipart/azuredocai",
             "database_stats": "/database/stats",
-            "similar_documents": "/documents/similar",
             "docs": "/docs"
         }
     
@@ -654,3 +709,5 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+
+#http://localhost:8000/docs# -> to access
