@@ -75,6 +75,7 @@ class EmbeddingGenerator:
                 from openai import AzureOpenAI
                 self.client = AzureOpenAI(**config)
                 
+                
                 print(f"✓ Azure OpenAI embedding client created for model: {self.model}")
                     
             except Exception as e:
