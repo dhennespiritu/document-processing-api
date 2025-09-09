@@ -1,5 +1,6 @@
 from doc_extraction import DocumentProcessor, ProcessedDocument, TextCleaner
-from doc_chunking import BaseChunker, TokenBasedChunker, SemanticChunker, ChunkingManager, ChunkingStrategy
+#from doc_chunking import BaseChunker, TokenBasedChunker, SemanticChunker, ChunkingManager, ChunkingStrategy
+from doc_chunker import DocumentChunker
 from doc_embedding import EmbeddingGenerator
 from dbase_store import VectorDatabase, DatabaseConfig, VectorRecord
 from doc_azure_extractor import AzureExtractor, azure_client
@@ -35,7 +36,7 @@ async def process_document(file_path: str) -> dict:
     # Initialize processor
     processor = DocumentProcessor()
     cleaner = TextCleaner()
-    chunker = ChunkingManager()
+    chunker = DocumentChunker(max_tokens=8192)
     embedding_generator = EmbeddingGenerator()
 
     try:
@@ -66,7 +67,12 @@ async def process_document(file_path: str) -> dict:
 
         # Chunk document content
         logger.info('---Chunking document---')
-        doc_chunks = chunker.chunk_text(enhanced_content, ChunkingStrategy.SEMANTIC, source_file)
+        doc_chunks = chunker.chunk_document(
+            text=enhanced_content,
+            document_id=source_file,
+            chunk_size=500,
+            chunk_overlap=50
+        )
         
         if not doc_chunks:
             logger.warning("No chunks were created from the document content.")
@@ -163,7 +169,7 @@ async def process_document_with_azure(file_path: str) -> dict:
     # Initialize processor
     processor = AzureExtractor(azure_client)
     cleaner = TextCleaner()
-    chunker = ChunkingManager()
+    chunker = DocumentChunker(max_tokens=8192)
     embedding_generator = EmbeddingGenerator()
 
 
@@ -178,6 +184,7 @@ async def process_document_with_azure(file_path: str) -> dict:
         source_file = processed_doc.file_path
         content = processed_doc.content
         doc_metadata = processed_doc.meta_data
+
 
         if len(content)==0:
             raise ValueError(f"Failed to process document: {e}")
@@ -194,8 +201,13 @@ async def process_document_with_azure(file_path: str) -> dict:
 
         # Chunk document content
         logger.info('---Chunking document---')
-        doc_chunks = chunker.chunk_text(enhanced_content, ChunkingStrategy.SEMANTIC, source_file)
-        
+        doc_chunks = chunker.chunk_document(
+            text=enhanced_content,
+            document_id=source_file,
+            chunk_size=500,
+            chunk_overlap=50
+        )
+
         if not doc_chunks:
             logger.warning("No chunks were created from the document content.")
             doc_chunks = [enhanced_content]
@@ -276,5 +288,5 @@ async def process_document_with_azure(file_path: str) -> dict:
 
 # For testing
 if __name__ == "__main__":
-    document_path=r"C:\Users\dv146ms\Downloads\Invoice-000sample.pdf"
+    document_path=r"C:\Users\dv146ms\OneDrive - EY\00 - RFP\GPT\sample documents\Rouse Hill - Country Road - ASIC On-File Report Current - COUNTRY ROAD CLOTHING PTY. LTD. ACN 005 419 447.pdf"
     asyncio.run(process_document_with_azure(document_path))
