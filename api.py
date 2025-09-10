@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
-
+from doc_process import process_document, process_document_with_azure
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -26,8 +26,6 @@ from doc_retrieval import (
     simple_search,
     enhanced_search
 )
-from dbase_store import DatabaseConfig
-from doc_process import process_document, process_document_with_azure
 
 # Configure logging
 logging.basicConfig(
@@ -286,14 +284,16 @@ async def search_with_params(
         raise HTTPException(status_code=400, detail=f"Invalid search parameters: {str(e)}")
 
 # Upload and process document endpoint - Modified to accept binary data
-@app.post("/documents/upload", response_model=DocumentProcessResponse, tags=["Documents - Standard Extraction"])
+@app.post("/documents/upload", response_model=DocumentProcessResponse, tags=["Document Processing"])
 async def upload_and_process_document(
     request: BinaryFileUploadRequest,
-    background_tasks: BackgroundTasks = None
+    # Remove background_tasks parameter since we're not using it
 ):
     """
     Accept binary file data (base64 encoded), create a file in root directory and process it.
+    Wait for complete processing including vector database storage before returning.
     """
+    file_path = None
     try:
         # Decode the base64 file data
         try:
@@ -320,233 +320,168 @@ async def upload_and_process_document(
         logger.info(f"Binary file created: {file_path} (original: {request.filename})")
         logger.info(f"File size: {len(file_content)} bytes")
         
-        # Add processing task to background
-        if background_tasks:
-            background_tasks.add_task(
-                process_document_async, 
-                str(file_path.absolute()),
-                request.filename,  # Pass original filename for reference
-                str(file_path)     # Pass created file path for cleanup
-            )
-            
-            return DocumentProcessResponse(
-                success=True,
-                message=f"File created and processing started: {request.filename}",
-                details={
-                    "original_filename": request.filename,
-                    "created_file_path": str(file_path.absolute()),
-                    "file_size_bytes": len(file_content),
-                    "status": "processing"
-                }
-            )
-        else:
-            # Process immediately (blocking)
-            try:
-                result = await process_document(str(file_path.absolute()))
-                
-                return DocumentProcessResponse(
-                    success=True,
-                    message=f"File created and processed successfully: {request.filename}",
-                    details={
-                        "original_filename": request.filename,
-                        "created_file_path": str(file_path.absolute()),
-                        "file_size_bytes": len(file_content),
-                        "processing_result": result,
-                        "status": "completed"
-                    }
-                )
-            except Exception as e:
-                # Clean up file if processing fails
-                try:
-                    file_path.unlink()
-                except:
-                    pass
-                raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Binary file upload failed: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
-    
-
-# Legacy multipart file upload endpoint (keeping for backward compatibility)
-@app.post("/documents/upload-multipart", response_model=DocumentProcessResponse, tags=["Documents - Standard Extraction"])
-async def upload_multipart_document(
-    file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = None
-):
-    """
-    Legacy multipart file upload endpoint for backward compatibility.
-    """
-    try:
-        # Create uploads directory if it doesn't exist
-        upload_dir = Path("uploads")
-        upload_dir.mkdir(exist_ok=True)
-        
-        # Save uploaded file
-        file_path = upload_dir / file.filename
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
-        
-        logger.info(f"Uploaded file saved: {file_path}")
-        
-        # Add processing task to background
-        if background_tasks:
-            background_tasks.add_task(process_document_async, str(file_path.absolute()))
-            
-            return DocumentProcessResponse(
-                success=True,
-                message=f"File uploaded and processing started: {file.filename}",
-                details={"file_path": str(file_path.absolute()), "status": "processing"}
-            )
-        else:
-            # Process immediately (blocking)
+        # Process document and wait for completion (including vector DB storage)
+        try:
+            logger.info(f"Starting document processing for: {request.filename}")
             result = await process_document(str(file_path.absolute()))
+            logger.info(f"Document processing completed for: {request.filename}")
             
             return DocumentProcessResponse(
                 success=True,
-                message=f"File uploaded and processed successfully: {file.filename}",
-                details=result
-            )
-    except Exception as e:
-        logger.error(f"File upload failed: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
-
-
-# Upload and process document endpoint - Modified to accept binary data
-@app.post("/documents/upload/azuredocai", response_model=DocumentProcessResponse, tags=["Documents - Azure Doc AI Extraction"])
-async def azure_upload_and_process_document(
-    request: BinaryFileUploadRequest,
-    background_tasks: BackgroundTasks = None
-):
-    """
-    Accept binary file data (base64 encoded), create a file in root directory and process it.
-    """
-    try:
-        # Decode the base64 file data
-        try:
-            file_content = base64.b64decode(request.file_data)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 file data: {str(e)}")
-        
-        # Generate unique filename to avoid conflicts
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        file_extension = Path(request.filename).suffix
-        safe_filename = f"{timestamp}_{unique_id}_{Path(request.filename).stem}{file_extension}"
-        
-        # Create file in root directory (current working directory)
-        file_path = Path.cwd() / safe_filename
-        
-        # Write binary content to file
-        try:
-            with open(file_path, "wb") as f:
-                f.write(file_content)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
-        
-        logger.info(f"Binary file created: {file_path} (original: {request.filename})")
-        logger.info(f"File size: {len(file_content)} bytes")
-        
-        # Add processing task to background
-        if background_tasks:
-            background_tasks.add_task(
-                process_document_async, 
-                str(file_path.absolute()),
-                request.filename,  # Pass original filename for reference
-                str(file_path)     # Pass created file path for cleanup
-            )
-            
-            return DocumentProcessResponse(
-                success=True,
-                message=f"File created and processing started: {request.filename}",
+                message=f"File uploaded, processed, and stored in vector database successfully: {request.filename}",
                 details={
                     "original_filename": request.filename,
                     "created_file_path": str(file_path.absolute()),
                     "file_size_bytes": len(file_content),
-                    "status": "processing"
+                    "processing_result": result,
+                    "status": "completed_and_stored",
+                    "processing_method": "standard"
                 }
             )
-        else:
-            # Process immediately (blocking)
+            
+        except Exception as e:
+            logger.error(f"Standard document processing failed for {request.filename}: {str(e)}")
+            logger.info(f"Attempting Azure document processing for: {request.filename}")
+            
+            # Fallback to Azure processing
             try:
                 result = await process_document_with_azure(str(file_path.absolute()))
+                logger.info(f"Azure document processing completed for: {request.filename}")
                 
                 return DocumentProcessResponse(
                     success=True,
-                    message=f"File created and processed successfully: {request.filename}",
+                    message=f"File uploaded, processed with Azure Doc AI, and stored in vector database successfully: {request.filename}",
                     details={
                         "original_filename": request.filename,
                         "created_file_path": str(file_path.absolute()),
                         "file_size_bytes": len(file_content),
                         "processing_result": result,
-                        "status": "completed"
+                        "status": "completed_and_stored",
+                        "processing_method": "azure_fallback",
+                        "fallback_reason": str(e)
                     }
                 )
-            except Exception as e:
-                # Clean up file if processing fails
-                try:
-                    file_path.unlink()
-                except:
-                    pass
-                raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-        
+                
+            except Exception as azure_error:
+                logger.error(f"Both standard and Azure document processing failed for {request.filename}")
+                logger.error(f"Standard error: {str(e)}")
+                logger.error(f"Azure error: {str(azure_error)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Both standard and Azure processing failed. Standard: {str(e)}. Azure: {str(azure_error)}"
+                )
+            
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Binary file upload failed: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
-    
+    finally:
+        # Clean up the temporary file after processing (whether successful or not)
+        if file_path and file_path.exists():
+            try:
+                file_path.unlink()
+                logger.info(f"Cleaned up temporary file: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary file {file_path}: {str(e)}")
 
-# Legacy multipart file upload endpoint (keeping for backward compatibility)
-@app.post("/documents/upload-multipart/azuredocai", response_model=DocumentProcessResponse, tags=["Documents - Azure Doc AI Extraction"])
-async def azure_upload_multipart_document(
+@app.post("/documents/upload-multipart", response_model=DocumentProcessResponse, tags=["Document Processing"])
+async def upload_multipart_document(
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = None
+    # Remove background_tasks parameter since we're not using it
 ):
     """
     Legacy multipart file upload endpoint for backward compatibility.
+    Wait for complete processing including vector database storage before returning.
     """
+    file_path = None
     try:
         # Create uploads directory if it doesn't exist
         upload_dir = Path("uploads")
         upload_dir.mkdir(exist_ok=True)
         
-        # Save uploaded file
-        file_path = upload_dir / file.filename
+        # Generate unique filename to avoid conflicts
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        file_extension = Path(file.filename).suffix
+        safe_filename = f"{timestamp}_{unique_id}_{Path(file.filename).stem}{file_extension}"
+        
+        # Save uploaded file with unique name
+        file_path = upload_dir / safe_filename
+        content = await file.read()
+        
         with open(file_path, "wb") as buffer:
-            content = await file.read()
             buffer.write(content)
         
-        logger.info(f"Uploaded file saved: {file_path}")
+        logger.info(f"Multipart file saved: {file_path} (original: {file.filename})")
+        logger.info(f"File size: {len(content)} bytes")
         
-        # Add processing task to background
-        if background_tasks:
-            background_tasks.add_task(process_document_async, str(file_path.absolute()))
+        # Process document and wait for completion (including vector DB storage)
+        try:
+            logger.info(f"Starting document processing for: {file.filename}")
+            result = await process_document(str(file_path.absolute()))
+            logger.info(f"Document processing completed for: {file.filename}")
             
             return DocumentProcessResponse(
                 success=True,
-                message=f"File uploaded and processing started: {file.filename}",
-                details={"file_path": str(file_path.absolute()), "status": "processing"}
+                message=f"File uploaded, processed, and stored in vector database successfully: {file.filename}",
+                details={
+                    "original_filename": file.filename,
+                    "saved_file_path": str(file_path.absolute()),
+                    "file_size_bytes": len(content),
+                    "processing_result": result,
+                    "status": "completed_and_stored",
+                    "processing_method": "standard"
+                }
             )
-        else:
-            # Process immediately (blocking)
-            result = await process_document_with_azure(str(file_path.absolute()))
             
-            return DocumentProcessResponse(
-                success=True,
-                message=f"File uploaded and processed successfully: {file.filename}",
-                details=result
-            )
+        except Exception as e:
+            logger.error(f"Standard document processing failed for {file.filename}: {str(e)}")
+            logger.info(f"Attempting Azure document processing for: {file.filename}")
+            
+            # Fallback to Azure processing
+            try:
+                result = await process_document_with_azure(str(file_path.absolute()))
+                logger.info(f"Azure document processing completed for: {file.filename}")
+                
+                return DocumentProcessResponse(
+                    success=True,
+                    message=f"File uploaded, processed with Azure, and stored in vector database successfully: {file.filename}",
+                    details={
+                        "original_filename": file.filename,
+                        "saved_file_path": str(file_path.absolute()),
+                        "file_size_bytes": len(content),
+                        "processing_result": result,
+                        "status": "completed_and_stored",
+                        "processing_method": "azure_fallback",
+                        "fallback_reason": str(e)
+                    }
+                )
+                
+            except Exception as azure_error:
+                logger.error(f"Both standard and Azure document processing failed for {file.filename}")
+                logger.error(f"Standard error: {str(e)}")
+                logger.error(f"Azure error: {str(azure_error)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Both standard and Azure processing failed. Standard: {str(e)}. Azure: {str(azure_error)}"
+                )
+                
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"File upload failed: {e}")
+        logger.error(f"Multipart file upload failed: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    finally:
+        # Clean up the uploaded file after processing (whether successful or not)
+        if file_path and file_path.exists():
+            try:
+                file_path.unlink()
+                logger.info(f"Cleaned up uploaded file: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up uploaded file {file_path}: {str(e)}")
 
 
 # Database statistics endpoint
@@ -568,41 +503,6 @@ async def get_database_stats():
         logger.error(f"Failed to get database stats: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 
-# Background task for document processing - Modified to handle cleanup
-async def process_document_async(file_path: str, original_filename: str = None, cleanup_path: str = None):
-    """Process document in background with optional cleanup."""
-    try:
-        logger.info(f"Background processing started for: {file_path}")
-        if original_filename:
-            logger.info(f"Original filename: {original_filename}")
-
-        try:
-            result = await process_document(file_path)
-        except:
-            result = await process_document_with_azure(file_path)
-        
-        logger.info(f"Background processing completed for: {file_path}")
-        logger.info(f"Processing result: {result}")
-        
-        #Clean up the created file after processing
-        if cleanup_path and Path(cleanup_path).exists():
-            try:
-                Path(cleanup_path).unlink()
-                logger.info(f"Cleaned up temporary file: {cleanup_path}")
-            except Exception as cleanup_error:
-                logger.warning(f"Failed to cleanup file {cleanup_path}: {cleanup_error}")
-        
-    except Exception as e:
-        logger.error(f"Background processing failed for {file_path}: {e}")
-        logger.error(traceback.format_exc())
-        
-        # Clean up file on error
-        if cleanup_path and Path(cleanup_path).exists():
-            try:
-                Path(cleanup_path).unlink()
-                logger.info(f"Cleaned up file after processing error: {cleanup_path}")
-            except Exception as cleanup_error:
-                logger.warning(f"Failed to cleanup file after error {cleanup_path}: {cleanup_error}")
 
 # Error handlers
 @app.exception_handler(HTTPException)

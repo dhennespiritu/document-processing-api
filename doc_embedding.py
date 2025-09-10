@@ -224,34 +224,3 @@ def semantic_search(query: str, documents: List[str], top_k: int = 5,
     return similarities[:top_k]
 
 
-# # Example usage
-# if __name__ == "__main__":
-#     # Example 1: Simple embedding generation using Azure OpenAI
-#     text = "This is a sample text for embedding generation."
-    
-#     # Using Azure OpenAI (default, matching your setup)
-#     try:
-#         embedding = generate_embedding(text)
-#         print(f"Azure OpenAI embedding dimension: {len(embedding)}")
-#         print(f"First 5 values: {embedding[:5]}")
-#     except Exception as e:
-#         print(f"Azure OpenAI embedding failed: {e}")
-    
-#     # # Example 2: Semantic search with Azure OpenAI
-#     # query = "machine learning algorithms"
-#     # documents = [
-#     #     "Deep learning is a subset of machine learning",
-#     #     "Natural language processing uses various algorithms",
-#     #     "Computer vision applications are growing rapidly",
-#     #     "Neural networks are powerful machine learning models",
-#     #     "Data science involves statistical analysis"
-#     # ]
-    
-#     # try:
-#     #     results = semantic_search(query, documents, top_k=3)
-#     #     print("\nSemantic search results:")
-#     #     for idx, score, doc in results:
-#     #         print(f"Doc {idx}: {score:.3f} - {doc}")
-#     # except Exception as e:
-#     #     print(f"Semantic search failed: {e}")
-    

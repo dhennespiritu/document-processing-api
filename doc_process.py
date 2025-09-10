@@ -1,17 +1,10 @@
-from doc_extraction import DocumentProcessor, ProcessedDocument, TextCleaner
-#from doc_chunking import BaseChunker, TokenBasedChunker, SemanticChunker, ChunkingManager, ChunkingStrategy
+from doc_extraction import DocumentProcessor, TextCleaner
 from doc_chunker import DocumentChunker
 from doc_embedding import EmbeddingGenerator
 from dbase_store import VectorDatabase, DatabaseConfig, VectorRecord
 from doc_azure_extractor import AzureExtractor, azure_client
-import os
-import re
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
-from datetime import datetime
-import mimetypes
 import logging
 import json
 import asyncio

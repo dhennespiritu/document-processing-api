@@ -536,14 +536,3 @@ async def enhanced_search(
     finally:
         await retriever.close()
 
-# # Example usage and testing
-# async def main():
-#     """Example usage and testing."""
-    
-#     #results = await simple_search("Bank Guarantee", max_results=3, min_similarity=0.3)
-#     results = await enhanced_search("Can you give me the latest open for trade date and rent start date for property in Rouse Hill Town Centre?",enable_context=True,enable_enhancement=True,max_results=3) 
-#     print (results.to_json(full_content=True))
-
-
-# if __name__ == "__main__":
-#     asyncio.run(main())
