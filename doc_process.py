@@ -288,5 +288,5 @@ async def process_document_with_azure(file_path: str) -> dict:
 
 # For testing
 if __name__ == "__main__":
-    document_path=r"C:\Users\dv146ms\OneDrive - EY\00 - RFP\GPT\sample documents\Rouse Hill - Country Road - ASIC On-File Report Current - COUNTRY ROAD CLOTHING PTY. LTD. ACN 005 419 447.pdf"
+    document_path=r"C:\Users\dv146ms\Downloads\Invoice-000sample.pdf"
     asyncio.run(process_document_with_azure(document_path))

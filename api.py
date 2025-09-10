@@ -575,8 +575,11 @@ async def process_document_async(file_path: str, original_filename: str = None, 
         logger.info(f"Background processing started for: {file_path}")
         if original_filename:
             logger.info(f"Original filename: {original_filename}")
-            
-        result = await process_document(file_path)
+
+        try:
+            result = await process_document(file_path)
+        except:
+            result = await process_document_with_azure(file_path)
         
         logger.info(f"Background processing completed for: {file_path}")
         logger.info(f"Processing result: {result}")
