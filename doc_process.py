@@ -279,7 +279,7 @@ async def process_document_with_azure(file_path: str) -> dict:
             logger.warning(f"Error closing database: {e}")
 
 
-# For testing
-if __name__ == "__main__":
-    document_path=r"C:\Users\dv146ms\Downloads\Invoice-000sample.pdf"
-    asyncio.run(process_document_with_azure(document_path))
+# # For testing
+# if __name__ == "__main__":
+#     document_path=r"C:\Users\dv146ms\Downloads\Invoice-000sample.pdf"
+#     asyncio.run(process_document_with_azure(document_path))
